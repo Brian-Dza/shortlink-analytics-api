@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: shortlink-analytics-api
+    runtime: docker
+    region: oregon
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "5"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: shortlink-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: shortlink-redis
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: IP_HASH_SALT
+        generateValue: true
+
+  - type: keyvalue
+    name: shortlink-redis
+    region: oregon
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
+
+databases:
+  - name: shortlink-postgres
+    databaseName: shortlink_db
+    user: shortlink
+    region: oregon
+    plan: free
+    postgresMajorVersion: "16"
+    ipAllowList: []

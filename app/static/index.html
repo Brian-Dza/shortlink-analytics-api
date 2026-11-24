@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>shortlink-analytics · Panel de Control</title>
+  <meta name="description" content="Panel técnico para acortamiento de URLs, redirecciones HTTP 307 en Redis Cache-Aside y analíticas asíncronas.">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem("shortlink_theme");
+        var preferred = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        var theme = saved === "light" || saved === "dark" ? saved : preferred;
+        document.documentElement.setAttribute("data-theme", theme);
+      } catch (_err) {
+        document.documentElement.setAttribute("data-theme", "dark");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/css/styles.css">
+  <script type="module" src="/static/js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <div class="brand-group">
+        <a href="/" class="brand" aria-label="Inicio de shortlink-analytics">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-name">shortlink-analytics</span>
+        </a>
+        <span class="badge badge-muted mono">v1</span>
+      </div>
+
+      <div class="topbar-actions">
+        <button
+          type="button"
+          id="health-btn"
+          class="health-pill"
+          title="Refrescar estado de PostgreSQL y Redis"
+          aria-live="polite"
+        >
+          <span id="health-dot" class="status-dot status-dot-muted" aria-hidden="true"></span>
+          <span id="health-label">Verificando...</span>
+        </button>
+
+        <a href="/docs" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">
+          Swagger API
+        </a>
+
+        <button
+          type="button"
+          id="theme-toggle"
+          class="btn btn-ghost btn-sm"
+          aria-label="Cambiar entre modo oscuro y claro"
+        >
+          Tema: Oscuro
+        </button>
+
+        <div id="auth-guest-actions" class="auth-actions">
+          <button type="button" id="open-login-btn" class="btn btn-secondary btn-sm">
+            Iniciar sesión
+          </button>
+          <button type="button" id="open-register-btn" class="btn btn-primary btn-sm">
+            Crear cuenta
+          </button>
+        </div>
+
+        <div id="auth-user-actions" class="auth-actions" hidden>
+          <span id="auth-user-email" class="user-pill mono"></span>
+          <button type="button" id="logout-btn" class="btn btn-ghost btn-sm">
+            Salir
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container main-content">
+    <section class="card" aria-labelledby="shortener-heading">
+      <div class="card-header">
+        <div>
+          <h1 id="shortener-heading" class="card-title">Acortador de URLs</h1>
+          <p class="card-subtitle">
+            Redirección temporal <code>HTTP 307</code> con Redis Cache-Aside y telemetría sin bloqueo.
+          </p>
+        </div>
+        <span id="rate-limit-tier" class="badge badge-accent mono">
+          Anónimo · 10 req/min
+        </span>
+      </div>
+
+      <div id="rate-limit-banner" class="alert alert-warn" role="status" aria-live="polite" hidden>
+        <span id="rate-limit-banner-text">Límite de tasa alcanzado.</span>
+      </div>
+
+      <form id="shorten-form" class="shorten-form" novalidate>
+        <div class="form-grid">
+          <div class="field field-wide">
+            <label for="original-url-input">URL de destino *</label>
+            <input
+              id="original-url-input"
+              name="original_url"
+              type="url"
+              required
+              maxlength="2048"
+              placeholder="https://fastapi.tiangolo.com/tutorial/"
+              autocomplete="off"
+            >
+          </div>
+
+          <div class="field">
+            <label for="custom-alias-input">Alias opcional <span class="hint">(3–16 chars)</span></label>
+            <input
+              id="custom-alias-input"
+              name="custom_alias"
+              type="text"
+              minlength="3"
+              maxlength="16"
+              pattern="[A-Za-z0-9_-]{3,16}"
+              placeholder="mi-enlace"
+              autocomplete="off"
+            >
+          </div>
+
+          <div class="field">
+            <label for="expires-at-input">Expiración opcional <span class="hint">(hora local)</span></label>
+            <input
+              id="expires-at-input"
+              name="expires_at"
+              type="datetime-local"
+            >
+          </div>
+        </div>
+
+        <div id="shorten-error" class="alert alert-error" role="alert" hidden></div>
+
+        <div class="form-footer">
+          <p class="field-note">
+            Solo se permiten esquemas <code>http://</code> y <code>https://</code>.
+          </p>
+          <button type="submit" id="shorten-submit-btn" class="btn btn-primary">
+            Acortar enlace
+          </button>
+        </div>
+      </form>
+
+      <div id="shorten-result" class="result-strip" aria-live="polite" hidden>
+        <div class="result-info">
+          <span class="result-label">Enlace generado</span>
+          <a id="result-short-url" href="#" target="_blank" rel="noopener noreferrer" class="result-url mono"></a>
+        </div>
+        <div class="result-actions">
+          <button type="button" id="result-copy-btn" class="btn btn-secondary btn-sm">
+            Copiar
+          </button>
+          <a id="result-open-btn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">
+            Abrir 307
+          </a>
+          <button type="button" id="result-stats-btn" class="btn btn-ghost btn-sm" hidden>
+            Analíticas
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="links-heading">
+      <div class="card-header">
+        <div class="card-title-row">
+          <h2 id="links-heading" class="card-title">Mis enlaces</h2>
+          <span id="links-total-badge" class="badge badge-muted mono">0</span>
+        </div>
+
+        <div id="links-toolbar" class="toolbar" hidden>
+          <div class="segmented" role="group" aria-label="Filtrar enlaces por estado">
+            <button type="button" class="seg-btn is-active" data-filter="all">Todos</button>
+            <button type="button" class="seg-btn" data-filter="active">Activos</button>
+            <button type="button" class="seg-btn" data-filter="inactive">Inactivos</button>
+          </div>
+          <button type="button" id="refresh-links-btn" class="btn btn-ghost btn-sm">
+            Actualizar
+          </button>
+        </div>
+      </div>
+
+      <div id="links-guest-state" class="empty-state">
+        <p class="empty-title">Modo invitado activo</p>
+        <p class="empty-desc">
+          Puedes acortar enlaces de forma anónima (10 req/min). Inicia sesión o crea una cuenta para gestionar tus enlaces, editar destinos e inspeccionar analíticas en tiempo real.
+        </p>
+        <div class="empty-actions">
+          <button type="button" id="guest-login-btn" class="btn btn-primary btn-sm">
+            Iniciar sesión
+          </button>
+          <button type="button" id="guest-register-btn" class="btn btn-secondary btn-sm">
+            Crear cuenta
+          </button>
+        </div>
+      </div>
+
+      <div id="links-auth-state" hidden>
+        <div id="links-loading" class="empty-state" hidden>
+          <p class="empty-desc">Cargando enlaces...</p>
+        </div>
+
+        <div id="links-empty-state" class="empty-state" hidden>
+          <p class="empty-title">No hay enlaces en esta vista</p>
+          <p class="empty-desc">Crea un enlace arriba o cambia el filtro de estado.</p>
+        </div>
+
+        <div id="links-table-wrap" class="table-wrap" hidden>
+          <table class="links-table">
+            <thead>
+              <tr>
+                <th>Código corto</th>
+                <th>URL de destino</th>
+                <th>Estado</th>
+                <th>Expiración</th>
+                <th class="col-actions">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="links-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="pagination-bar" class="pagination-bar" hidden>
+          <span id="pagination-info" class="pagination-info mono"></span>
+          <div class="pagination-controls">
+            <button type="button" id="prev-page-btn" class="btn btn-secondary btn-sm">Anterior</button>
+            <button type="button" id="next-page-btn" class="btn btn-secondary btn-sm">Siguiente</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="auth-dialog" class="modal" aria-labelledby="auth-dialog-title">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2 id="auth-dialog-title" class="modal-title">Acceso a tu cuenta</h2>
+        <button type="button" class="btn-icon" data-close-dialog="auth-dialog" aria-label="Cerrar">
+          ✕
+        </button>
+      </div>
+
+      <div class="modal-tabs" role="tablist" aria-label="Modo de autenticación">
+        <button
+          type="button"
+          id="auth-tab-login"
+          class="tab-btn is-active"
+          role="tab"
+          aria-selected="true"
+          data-auth-mode="login"
+        >
+          Iniciar sesión
+        </button>
+        <button
+          type="button"
+          id="auth-tab-register"
+          class="tab-btn"
+          role="tab"
+          aria-selected="false"
+          data-auth-mode="register"
+        >
+          Crear cuenta
+        </button>
+      </div>
+
+      <form id="auth-form" class="modal-form" novalidate>
+        <div class="field">
+          <label for="auth-email-input">Correo electrónico</label>
+          <input
+            id="auth-email-input"
+            name="email"
+            type="email"
+            required
+            autocomplete="email"
+            placeholder="dev@example.com"
+          >
+        </div>
+
+        <div class="field">
+          <label for="auth-password-input">Contraseña</label>
+          <input
+            id="auth-password-input"
+            name="password"
+            type="password"
+            required
+            minlength="8"
+            maxlength="128"
+            autocomplete="current-password"
+            placeholder="Mínimo 8 caracteres"
+          >
+        </div>
+
+        <div id="auth-error" class="alert alert-error" role="alert" hidden></div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-dialog="auth-dialog">
+            Cancelar
+          </button>
+          <button type="submit" id="auth-submit-btn" class="btn btn-primary">
+            Iniciar sesión
+          </button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="edit-dialog" class="modal" aria-labelledby="edit-dialog-title">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <div>
+          <h2 id="edit-dialog-title" class="modal-title">Editar enlace</h2>
+          <p id="edit-dialog-code" class="modal-subtitle mono"></p>
+        </div>
+        <button type="button" class="btn-icon" data-close-dialog="edit-dialog" aria-label="Cerrar">
+          ✕
+        </button>
+      </div>
+
+      <form id="edit-form" class="modal-form" novalidate>
+        <div class="field">
+          <label for="edit-url-input">URL de destino</label>
+          <input
+            id="edit-url-input"
+            name="original_url"
+            type="url"
+            required
+            maxlength="2048"
+          >
+        </div>
+
+        <label class="checkbox-row">
+          <input id="edit-active-input" name="is_active" type="checkbox">
+          <span>Enlace activo (responde redirecciones HTTP 307)</span>
+        </label>
+
+        <div class="field">
+          <label for="edit-expires-input">Fecha de expiración <span class="hint">(hora local)</span></label>
+          <input id="edit-expires-input" name="expires_at" type="datetime-local">
+        </div>
+
+        <label class="checkbox-row">
+          <input id="edit-clear-expires-input" name="clear_expires" type="checkbox">
+          <span>Sin expiración (limpiar fecha límite)</span>
+        </label>
+
+        <p class="field-note">
+          Al guardar se invalida inmediatamente la clave en Redis para evitar caché obsoleta.
+        </p>
+
+        <div id="edit-error" class="alert alert-error" role="alert" hidden></div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-dialog="edit-dialog">
+            Cancelar
+          </button>
+          <button type="submit" id="edit-submit-btn" class="btn btn-primary">
+            Guardar cambios
+          </button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="delete-dialog" class="modal modal-sm" aria-labelledby="delete-dialog-title">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2 id="delete-dialog-title" class="modal-title">Eliminar enlace</h2>
+        <button type="button" class="btn-icon" data-close-dialog="delete-dialog" aria-label="Cerrar">
+          ✕
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <p class="modal-copy">
+          Vas a eliminar permanentemente el código <strong id="delete-target-code" class="mono"></strong>.
+        </p>
+        <p class="field-note">
+          Esta acción borra sus eventos analíticos en cascada (<code>ON DELETE CASCADE</code>) e invalida su caché en Redis de inmediato.
+        </p>
+        <div id="delete-error" class="alert alert-error" role="alert" hidden></div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" data-close-dialog="delete-dialog">
+          Cancelar
+        </button>
+        <button type="button" id="confirm-delete-btn" class="btn btn-danger">
+          Eliminar definitivamente
+        </button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="stats-dialog" class="modal modal-lg" aria-labelledby="stats-dialog-title">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <div>
+          <h2 id="stats-dialog-title" class="modal-title">Analíticas del enlace</h2>
+          <p id="stats-subtitle" class="modal-subtitle mono"></p>
+        </div>
+        <div class="stats-header-controls">
+          <div class="segmented" role="group" aria-label="Ventana de tiempo">
+            <button type="button" class="seg-btn is-active" data-stats-days="7">7 días</button>
+            <button type="button" class="seg-btn" data-stats-days="30">30 días</button>
+          </div>
+          <button type="button" id="refresh-stats-btn" class="btn btn-secondary btn-sm">
+            Refrescar
+          </button>
+          <button type="button" class="btn-icon" data-close-dialog="stats-dialog" aria-label="Cerrar">
+            ✕
+          </button>
+        </div>
+      </div>
+
+      <div class="modal-body stats-body">
+        <div id="stats-error" class="alert alert-error" role="alert" hidden></div>
+
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-label">Clics totales</span>
+            <strong id="kpi-total-clicks" class="kpi-value mono">0</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Clics en ventana</span>
+            <strong id="kpi-window-clicks" class="kpi-value mono">0</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Navegador principal</span>
+            <strong id="kpi-top-browser" class="kpi-value">—</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">Origen principal</span>
+            <strong id="kpi-top-referer" class="kpi-value">—</strong>
+          </div>
+        </div>
+
+        <section class="chart-card" aria-label="Serie diaria de clics">
+          <div class="chart-card-header">
+            <h3 class="chart-title">Clics diarios (UTC)</h3>
+            <span id="stats-period-label" class="hint mono">Últimos 7 días</span>
+          </div>
+          <div id="stats-daily-chart" class="daily-chart-wrap"></div>
+        </section>
+
+        <div class="breakdown-grid">
+          <section class="chart-card">
+            <h3 class="chart-title">Top Navegadores</h3>
+            <div id="stats-browsers" class="breakdown-list"></div>
+          </section>
+          <section class="chart-card">
+            <h3 class="chart-title">Top Sistemas Operativos</h3>
+            <div id="stats-os" class="breakdown-list"></div>
+          </section>
+          <section class="chart-card">
+            <h3 class="chart-title">Top Dispositivos</h3>
+            <div id="stats-devices" class="breakdown-list"></div>
+          </section>
+          <section class="chart-card">
+            <h3 class="chart-title">Top Referers</h3>
+            <div id="stats-referers" class="breakdown-list"></div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
