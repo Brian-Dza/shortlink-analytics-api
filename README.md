@@ -58,7 +58,7 @@ sequenceDiagram
 
 ---
 
-## Decisiones de Ingeniería (Defensa en Entrevista)
+## Decisiones de Ingeniería
 
 - **`HTTP 307 Temporary Redirect` + `Cache-Control: no-store` en vez de `HTTP 301`:** `301` indica al navegador cachear permanentemente el destino, impidiendo futuras visitas al servidor y dejando ciegas las analíticas. `307` obliga a pasar por la API en cada clic y preserva el método HTTP original.
 - **Cache-Aside con invalidación post-`commit()` y degradación elegante:** Si Redis falla (`RedisError`), la API registra un `WARNING` y consulta PostgreSQL directamente sin devolver error `500`. Las operaciones `PATCH` y `DELETE` invalidan `link:{short_code}` **después** de confirmar el `commit()` en PostgreSQL para evitar *stale cache*. Al incluir `link_id` en el payload de Redis, un *Cache Hit* registra métricas sin consultar la BD.
